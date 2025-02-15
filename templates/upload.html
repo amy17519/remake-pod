@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Podcast Translator</title>
+    <style>
+        .flash-messages {
+            margin: 10px 0;
+            padding: 10px;
+        }
+        .flash-info {
+            background-color: #e3f2fd;
+            border: 1px solid #2196f3;
+        }
+        .flash-success {
+            background-color: #e8f5e9;
+            border: 1px solid #4caf50;
+        }
+        .flash-error {
+            background-color: #ffebee;
+            border: 1px solid #f44336;
+        }
+    </style>
+</head>
+<body>
+    <h1>Upload Podcast for Translation</h1>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="flash-messages flash-{{ category }}">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="POST" enctype="multipart/form-data">
+        <p>Select audio file: <input type="file" name="audio" accept="audio/*" required></p>
+        <p>From Language: 
+            <select name="from_lang" required>
+                <option value="zh">Chinese</option>
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+            </select>
+        </p>
+        <p>To Language:
+            <select name="to_lang" required>
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="zh">Chinese</option>
+            </select>
+        </p>
+        <input type="submit" value="Translate">
+    </form>
+</body>
+</html>
