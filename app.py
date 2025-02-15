@@ -19,8 +19,7 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24) # Required for flashing messages
 
 # Configure OpenAI API key
-# openai.api_key = os.getenv("OPENAI_API_KEY")
-openai.api_key = "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"
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 def format_timestamp(seconds):
