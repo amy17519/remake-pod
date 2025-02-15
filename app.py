@@ -7,7 +7,6 @@ from gtts import gTTS
 import openai
 import logging
 import warnings
-from pyannote.audio import Pipeline
             
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="whisper")
@@ -86,35 +85,11 @@ def translate_audio():
             flash("Transcribing audio...", "info")
             model = whisper.load_model("small", device="cpu")  # Changed to use device parameter
             
-            # Initialize pyannote diarization pipeline
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token="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"
-            )
-            
-            # Perform diarization
-            diarization = pipeline(temp_path)
-            
             # Transcribe with Whisper
             result = model.transcribe(temp_path, language=from_lang, fp16=False)
             
-            # Combine transcription with speaker IDs
-            segments = []
-            for segment, track in diarization.itertracks(yield_label=True):
-                # Find matching transcription segments
-                matching_segments = []
-                for trans_segment in result["segments"]:
-                    trans_start = trans_segment["start"]
-                    trans_end = trans_segment["end"]
-                    # Check for overlap
-                    if (trans_start >= segment.start and trans_start < segment.end) or \
-                       (trans_end > segment.start and trans_end <= segment.end):
-                        matching_segments.append(trans_segment["text"])
-                
-                if matching_segments:
-                    segments.append(f"Speaker {track}: {' '.join(matching_segments)}")
-            
-            text = "\n".join(segments)
+            # Get transcribed text
+            text = result["text"].strip()
             
             # Translate text using OpenAI
             logger.info("Translating text with OpenAI")
