@@ -1,5 +1,4 @@
 from flask import Flask, request, render_template, flash
-import whisper
 from datetime import timedelta, datetime
 from pydub import AudioSegment
 import os
@@ -7,6 +6,7 @@ from gtts import gTTS
 import openai
 import logging
 import warnings
+from stt.whisper import transcribe_audio
             
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="whisper")
@@ -80,13 +80,8 @@ def translate_audio():
                 os.rename(temp_original, temp_path)
             temp_files.append(temp_path)
 
-            # Load Whisper model and transcribe
-            logger.info("Transcribing audio with Whisper")
-            flash("Transcribing audio...", "info")
-            model = whisper.load_model("small", device="cpu")  # Changed to use device parameter
-            
             # Transcribe with Whisper
-            result = model.transcribe(temp_path, language=from_lang, fp16=False)
+            result = transcribe_audio(temp_path, from_lang)
             
             # Get transcribed text
             text = result["text"].strip()
