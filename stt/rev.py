@@ -1,20 +1,3 @@
-from rev_ai import apiclient
-import os
-from datetime import datetime
-import time
-import logging
-import argparse
-
-rev_access_token = os.getenv("REVAI_ACCESS_TOKEN")
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s: %(message)s',
-    datefmt='%m/%d/%Y %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-
 """
 Rev.ai Audio Transcription Script
 
@@ -43,6 +26,23 @@ Example:
 Output:
     Creates SRT and/or TXT files in the same directory as input file with timestamp
 """
+from rev_ai import apiclient
+import os
+from datetime import datetime
+import time
+import logging
+import argparse
+
+rev_access_token = os.getenv("REVAI_ACCESS_TOKEN")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s',
+    datefmt='%m/%d/%Y %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 
 def create_srt_from_transcript(transcript):
     # Split into lines and filter empty lines
