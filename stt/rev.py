@@ -44,6 +44,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def format_transcript_txt(transcript_text):
+    """
+    Format transcript text to have speaker, timestamp, and content on separate lines
+    with blank lines between entries.
+    
+    Args:
+        transcript_text (str): Raw transcript text
+        
+    Returns:
+        str: Formatted transcript text
+    """
+    formatted_text = []
+    for line in transcript_text.split('\n'):
+        if line.strip():  # Skip empty lines
+            parts = line.split('    ', 2)  # Split into max 3 parts
+            if len(parts) == 3:
+                speaker, timestamp, content = parts
+                formatted_text.extend([
+                    speaker,
+                    timestamp,
+                    content,
+                    ''  # Add blank line between entries
+                ])
+    return '\n'.join(formatted_text)
+
+
 def create_srt_from_transcript(transcript):
     # Split into lines and filter empty lines
     lines = [line.strip() for line in transcript.split('\n') if line.strip()]
@@ -141,8 +167,10 @@ def transcribe_to_files(file_path, language="cmn", output_format="srt"):
         os.makedirs(os.path.dirname(txt_path), exist_ok=True)
         
         logger.info(f"Saving TXT file to {txt_path}")
+        # Format and write transcript to file
+        formatted_transcript = format_transcript_txt(transcript_text)
         with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(transcript_text)
+            f.write(formatted_transcript)
         output_paths.append(txt_path)
     
     logger.info("File(s) have been created successfully")
