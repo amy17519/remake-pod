@@ -11,7 +11,7 @@ Installation:
     pip install --upgrade rev_ai
 
 Usage:
-    python rev.py <audio_file> [--language LANG_CODE] [--format FORMAT]
+    python rev.py <audio_file> [--language LANG_CODE] [--format FORMAT] [--fix_transcript]
 
 Arguments:
     audio_file          Path to the audio file to transcribe
@@ -19,9 +19,10 @@ Arguments:
                        Common codes: en (English), cmn (Mandarin). 
                        See https://docs.rev.ai/api/asynchronous/reference/#operation/SubmitTranscriptionJob!ct=application/json&path=language&t=request
     --format, -f        Output format: srt, txt, or both (default: both)
+    --fix_transcript    Use OpenAI model to fix transcript formatting (default: False)
 
 Example:
-    python rev.py recording.mp3 --language eng --format both
+    python rev.py recording.mp3 --language eng --format both --fix
 
 Output:
     Creates SRT and/or TXT files in the same directory as input file with timestamp
@@ -32,8 +33,12 @@ from datetime import datetime
 import time
 import logging
 import argparse
+import openai
 
 rev_access_token = os.getenv("REVAI_ACCESS_TOKEN")
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+OPENAI_MODEL = "gpt-4o-mini"
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +48,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def fix_transcript_text(transcript):
+    """Use OpenAI model to fix transcript formatting"""
+    client = openai.OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a transcript editor. Your task is to add proper punctuation and correct any misassigned characters, especially when a sentence-ending word or punctuation is misplaced in the timestamped transcript."},
+            {"role": "user", "content": transcript}
+        ]
+    )
+    fixed_transcript = response.choices[0].message.content
+    return fixed_transcript
 
 def format_transcript_txt(transcript_text):
     """
@@ -104,14 +121,16 @@ def create_srt_from_transcript(transcript):
     return "\n".join(srt_entries)
 
 
-def transcribe_to_files(file_path, language="cmn", output_format="srt"):
+def transcribe_to_files(file_path, save_dir = "./results", language="cmn", output_format="srt", fix_transcript=False):
     """
     Transcribe an audio file to SRT and/or TXT format using Rev.ai API.
     
     Args:
         file_path (str): Path to the local audio file
+        save_dir (str): Directory to save the output files
         language (str): Language code for transcription (e.g. "eng", "cmn")
         output_format (str): Output format - "srt", "txt", or "both"
+        fix_transcript (bool): Whether to use OpenAI to fix transcript formatting
         
     Returns:
         str or tuple: Path(s) to the generated file(s)
@@ -145,7 +164,61 @@ def transcribe_to_files(file_path, language="cmn", output_format="srt"):
     
     filename = os.path.splitext(os.path.basename(file_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    return save_transcript_files(transcript_text, save_dir, filename, timestamp, output_format, fix_transcript)
+
+def retrieve_transcription(job_id, save_dir="./results", output_format="both", fix_transcript=False):
+    """
+    Retrieve and save transcription for a completed Rev.ai job.
+    
+    Args:
+        job_id (str): The Rev.ai job ID to retrieve transcription for
+        save_dir (str): Directory to save output files (default: ./results)
+        output_format (str): Output format - 'srt', 'txt', or 'both' (default: both)
+        fix_transcript (bool): Whether to use OpenAI to fix transcript formatting
+        
+    Returns:
+        str or tuple: Path(s) to the saved transcription file(s)
+    """
+    client = apiclient.RevAiAPIClient(rev_access_token)
+    
+    # Get job details and check status
+    logger.info(f"Checking status for job {job_id}")
+    job_details = client.get_job_details(job_id)
+    
+    if job_details.status != "transcribed":
+        logger.error(f"Job is not complete. Current status: {job_details.status}")
+        raise Exception(f"Cannot retrieve transcription. Job status: {job_details.status}")
+        
+    # Get transcript
+    logger.info("Retrieving transcript")
+    transcript_text = client.get_transcript_text(job_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    return save_transcript_files(transcript_text, save_dir, f"transcript_{job_id}", timestamp, output_format, fix_transcript)
+
+def save_transcript_files(transcript_text, save_dir, base_filename, timestamp, output_format, fix_transcript=False):
+    """
+    Save transcript text to files in specified format(s)
+    
+    Args:
+        transcript_text (str): The transcript text to save
+        save_dir (str): Directory to save files
+        base_filename (str): Base name for output files
+        timestamp (str): Timestamp to append to filenames
+        output_format (str): Output format - 'srt', 'txt', or 'both'
+        fix_transcript (bool): Whether to use OpenAI to fix transcript formatting
+        
+    Returns:
+        str or tuple: Path(s) to saved file(s)
+    """
+    os.makedirs(save_dir, exist_ok=True)
     output_paths = []
+
+    # Fix transcript if requested
+    if fix_transcript:
+        logger.info("Fixing transcript with OpenAI model")
+        transcript_text = fix_transcript_text(transcript_text)
     
     if output_format in ["srt", "both"]:
         # Convert transcript to SRT format with speaker labels
@@ -153,21 +226,16 @@ def transcribe_to_files(file_path, language="cmn", output_format="srt"):
         captions = create_srt_from_transcript(transcript_text)
         
         # Save SRT file
-        srt_path = os.path.join(os.path.dirname(file_path), f"{filename}_{timestamp}.srt")
-        os.makedirs(os.path.dirname(srt_path), exist_ok=True)
-        
+        srt_path = os.path.join(save_dir, f"{base_filename}_{timestamp}.srt")
         logger.info(f"Saving SRT file to {srt_path}")
         with open(srt_path, 'w', encoding='utf-8') as f:
             f.write(captions)
         output_paths.append(srt_path)
         
     if output_format in ["txt", "both"]:
-        # Save raw transcript as TXT
-        txt_path = os.path.join(os.path.dirname(file_path), f"{filename}_{timestamp}.txt")
-        os.makedirs(os.path.dirname(txt_path), exist_ok=True)
-        
+        # Save transcript as TXT
+        txt_path = os.path.join(save_dir, f"{base_filename}_{timestamp}.txt")
         logger.info(f"Saving TXT file to {txt_path}")
-        # Format and write transcript to file
         formatted_transcript = format_transcript_txt(transcript_text)
         with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(formatted_transcript)
@@ -176,13 +244,16 @@ def transcribe_to_files(file_path, language="cmn", output_format="srt"):
     logger.info("File(s) have been created successfully")
     return output_paths[0] if len(output_paths) == 1 else tuple(output_paths)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Transcribe audio file to SRT/TXT using Rev.ai')
     parser.add_argument('file', help='Path to the audio file to transcribe')
     parser.add_argument('--language', '-l', default='cmn', help='Language code for transcription (default: cmn)')
     parser.add_argument('--format', '-f', default='both', choices=['srt', 'txt', 'both'], 
                        help='Output format: srt, txt, or both (default: both)')
-    
+    parser.add_argument('--save_dir', '-s', default='./results', help='Directory to save the output files (default: ./results)')
+    parser.add_argument('--fix_transcript', action='store_true', help='Use OpenAI model to fix transcript formatting')
+
     args = parser.parse_args()
     
     if not os.path.exists(args.file):
@@ -194,7 +265,7 @@ if __name__ == "__main__":
         exit(1)
         
     try:
-        output_paths = transcribe_to_files(args.file, args.language, args.format)
+        output_paths = transcribe_to_files(args.file, args.save_dir, args.language, args.format, args.fix_transcript)
         if isinstance(output_paths, tuple):
             logger.info(f"Transcription complete! Files saved to: {' and '.join(output_paths)}")
         else:

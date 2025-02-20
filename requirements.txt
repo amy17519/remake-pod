@@ -1,7 +1,5 @@
 flask==2.3.3
 openai==1.63.0
 pydub==0.25.1
-gTTS==2.3.2
-openai-whisper==20240930
-regex==2024.11.6
-torch==2.6.0
+rev_ai==2.21.0
+elevenlabs==1.51.0

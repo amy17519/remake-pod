@@ -1,48 +1,29 @@
 from flask import Flask, request, render_template, flash
-from datetime import timedelta, datetime
-from pydub import AudioSegment
 import os
-from gtts import gTTS
-import openai
 import logging
-import warnings
-from stt.whisper import transcribe_audio
-            
+from datetime import datetime
+from stt.rev import transcribe_to_files
+from translate.translate import translate_srt
+from tts.eleven_labs import generate_speech
 
-warnings.filterwarnings("ignore", category=FutureWarning, module="whisper")
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) # Required for flashing messages
 
-# Configure OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Map UI language codes to Rev.ai codes
+rev_ai_lang_map = {
+    'en': 'en',  # English
+    'zh': 'cmn'   # Mandarin Chinese
+}
 
-
-def format_timestamp(seconds):
-    """Convert seconds to SRT timestamp format (hh:mm:ss,ms)"""
-    td = timedelta(seconds=seconds)
-    return f"{td.seconds // 3600:02}:{(td.seconds // 60) % 60:02}:{td.seconds % 60:02},{int(td.microseconds / 1000):03}"
-
-def save_srt(segments, output_file="output.srt"):
-    """Save Whisper segments as an SRT file"""
-    with open(output_file, "w", encoding="utf-8") as f:
-        for i, segment in enumerate(segments, start=1):
-            start_time = format_timestamp(segment["start"])
-            end_time = format_timestamp(segment["end"])
-            text = segment["text"].strip()
-
-            f.write(f"{i}\n{start_time} --> {end_time}\n{text}\n\n")
 
 @app.route('/', methods=['GET', 'POST'])
 def translate_audio():
     if request.method == 'POST':
         temp_dir = "temp"
         temp_files = []  # Keep track of temporary files
-        downloads_dir = os.path.expanduser("~/Downloads")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         try:
             # Get the uploaded file and language selections
@@ -65,53 +46,37 @@ def translate_audio():
             logger.info("Saving uploaded file")
             original_filename = audio_file.filename
             file_ext = os.path.splitext(original_filename)[1].lower()
-            temp_original = os.path.join(temp_dir, f"temp_input{file_ext}")
+            temp_original = os.path.join(temp_dir, f"{os.path.splitext(original_filename)[0]}_temp{file_ext}")
             audio_file.save(temp_original)
             temp_files.append(temp_original)
             
-            # Convert audio to mp3 if needed
-            logger.info("Converting audio format if needed")
-            temp_path = os.path.join(temp_dir, "temp_audio.mp3")
-            if file_ext in ['.m4a', '.wav', '.ogg', '.aac']:
-                flash("Converting audio format...", "info")
-                audio = AudioSegment.from_file(temp_original)
-                audio.export(temp_path, format="mp3")
-            else:
-                os.rename(temp_original, temp_path)
-            temp_files.append(temp_path)
-
-            # Transcribe with Whisper
-            result = transcribe_audio(temp_path, from_lang)
+            # Transcribe with Rev.ai
+            logger.info("Transcribing audio with Rev.ai")
+            transcript_files = transcribe_to_files(temp_original, save_dir = "./results", language = rev_ai_lang_map.get(from_lang, 'en'), output_format="both", fix_transcript=True)
+            # transcript_files = retrieve_transcription("BOyLYQMK8aqa9Uve", save_dir = "./results", output_format="both", fix_transcript=True)
             
-            # Get transcribed text
-            text = result["text"].strip()
+            # Translate srt using OpenAI
+            logger.info("Starting translation")
+            translated_srt_path = translate_srt(transcript_files[0], from_lang, to_lang)
             
-            # Translate text using OpenAI
-            logger.info("Translating text with OpenAI")
-            flash("Translating content...", "info")
-            client = openai.OpenAI()
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": f"You are a translator. Translate the following text from {from_lang} to {to_lang}. Maintain the original meaning and tone."},
-                    {"role": "user", "content": text}
-                ]
-            )
-            translated_text = response.choices[0].message.content
-            
-            # Convert translated text to speech
-            logger.info("Converting translation to speech")
+            # Generate audio from translated text using ElevenLabs
+            logger.info("Converting translation to speech using ElevenLabs")
             flash("Generating audio from translation...", "info")
-            output_filename = f"translated_audio_{timestamp}.mp3"
-            output_path = os.path.join(downloads_dir, output_filename)
-            tts = gTTS(text=translated_text, lang=to_lang)
-            tts.save(output_path)
             
-            # Save transcript as SRT
-            logger.info("Saving transcript")
-            srt_filename = f"transcript_{timestamp}.srt"
-            srt_path = os.path.join(downloads_dir, srt_filename)
-            save_srt(result["segments"], srt_path)
+            # Create timestamp and format output filename for translated audio mp3
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            original_name = os.path.splitext(os.path.basename(original_filename))[0]
+            output_filename = f"{original_name}_{timestamp}_translated.mp3"
+            output_path = os.path.join("results", output_filename)
+            
+            # Generate speech using ElevenLabs with multiple default voices
+            generate_speech(
+                input_file=translated_srt_path,  # Use the SRT file
+                voices=["Roger", "Aria", "Jessica"],  # Default voices
+                output=output_path
+            )
+            
+            flash(f"Translation complete! Audio saved as {output_filename}", "success")
             
             # Clean up temporary files
             logger.info("Cleaning up temporary files")
@@ -128,7 +93,6 @@ def translate_audio():
             except Exception as e:
                 logger.error(f"Error removing temp directory: {str(e)}")
             
-            flash(f"Translation complete! Files saved to Downloads folder as {output_filename} and {srt_filename}", "success")
             return render_template('upload.html')
             
         except Exception as e:
