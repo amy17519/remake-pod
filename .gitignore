@@ -3,8 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Results directory
+# Results and data directories
 /results/
+stt/results/
+stt/example/
+temp.mp3
+temp/
 
 # Virtual environment
 venv/
