@@ -74,9 +74,81 @@ def format_for_claude(segments):
     return "\n".join(f"[{s['timestamp']}] {s['speaker']}: {s['content']}" for s in segments)
 
 
+HOST_NAMES = {"amy", "stella"}
+
+
+def split_into_chunks(segments, target_minutes=30, max_overshoot_minutes=5):
+    """
+    Split segments into ~target_minutes chunks, breaking at natural topic boundaries.
+    After reaching target_minutes, waits for a point where the next segment is a host
+    question (Amy/Stella asking something) — so we never break mid-topic or mid-answer.
+    Falls back to any speaker transition if no host question found within max_overshoot_minutes.
+    """
+    target_seconds = target_minutes * 60
+    max_overshoot = max_overshoot_minutes * 60
+    chunks = []
+    i = 0
+
+    while i < len(segments):
+        chunk_start_t = timestamp_to_seconds(segments[i]["timestamp"])
+        chunk = []
+        in_overshoot = False
+
+        while i < len(segments):
+            seg = segments[i]
+            t = timestamp_to_seconds(seg["timestamp"])
+            elapsed = t - chunk_start_t
+
+            if elapsed >= target_seconds:
+                in_overshoot = True
+
+            if in_overshoot and i + 1 < len(segments):
+                next_seg = segments[i + 1]
+                next_speaker = next_seg["speaker"].strip().lower()
+                is_host_question = (
+                    any(h in next_speaker for h in HOST_NAMES)
+                    and "?" in next_seg["content"]
+                )
+                past_max = elapsed >= target_seconds + max_overshoot
+
+                if is_host_question or past_max:
+                    chunk.append(seg)
+                    i += 1
+                    break
+
+            chunk.append(seg)
+            i += 1
+
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks
+
+
+def analyze_chunk(chunk_segments, client, chunk_num, total_chunks):
+    """Analyze a single chunk and return cut/edit decisions."""
+    start_ts = chunk_segments[0]["timestamp"]
+    end_ts = chunk_segments[-1]["timestamp"]
+    transcript_text = format_for_claude(chunk_segments)
+
+    prompt = f"""You are a professional podcast editor working on chunk {chunk_num} of {total_chunks} ({start_ts} to {end_ts}). Cut this segment to roughly 50% of its length. You have two tools:"""
+
+    return _call_claude(prompt, transcript_text, client)
+
+
 def analyze_with_claude(transcript_text, client):
-    """Send transcript to Claude and get cut decisions as JSON."""
-    prompt = f"""You are a professional podcast editor. The raw episode is approximately 3 hours long. Cut it down to 1–1.5 hours. You have two tools:
+    """Send a full transcript to Claude and get cut decisions as JSON (single-pass mode)."""
+    prompt = """You are a professional podcast editor. The raw episode is approximately 3 hours long. Cut it down to 1–1.5 hours. You have two tools:"""
+    return _call_claude(prompt, transcript_text, client)
+
+
+def _call_claude(prompt_header, transcript_text, client):
+    """Shared Claude call used by both single-pass and chunked modes."""
+    prompt = f"""{prompt_header}
+
+1. WHOLE-SEGMENT CUTS ("cuts"): Remove an entire time range. Use for pre-recording setup, post-recording chatter, filler-only exchanges, entire off-topic tangents, and sections where the same point repeats across multiple speakers over several minutes.
+
+2. INTRA-SEGMENT EDITS ("edits"): Edit inside a single guest segment by wrapping the parts to remove in [DEL]...[/DEL] tags. Use this when a guest gives a long answer that starts strong but then rambles, repeats, or loses the thread. Keep the sharpest version of their point; cut the padding. Make the guest sound concise and smart.
 
 1. WHOLE-SEGMENT CUTS ("cuts"): Remove an entire time range. Use for pre-recording setup, post-recording chatter, filler-only exchanges, entire off-topic tangents, and sections where the same point repeats across multiple speakers over several minutes.
 
@@ -131,7 +203,7 @@ Transcript:
     full_response = ""
     with client.messages.stream(
         model="claude-opus-4-6",
-        max_tokens=32768,
+        max_tokens=16384,
         messages=[{"role": "user", "content": prompt}],
     ) as stream:
         for text in stream.text_stream:
@@ -144,6 +216,35 @@ Transcript:
     response = re.sub(r"\n?```$", "", response)
 
     return json.loads(response)
+
+
+def process_in_chunks(segments, client, target_minutes=30):
+    """Split transcript into ~30min chunks and process each independently."""
+    chunks = split_into_chunks(segments, target_minutes=target_minutes)
+    print(f"Split into {len(chunks)} chunks:")
+    for i, chunk in enumerate(chunks):
+        print(f"  Chunk {i+1}: {chunk[0]['timestamp']} → {chunk[-1]['timestamp']} ({len(chunk)} segments)")
+
+    all_cuts = []
+    all_edits = []
+    summaries = []
+
+    for i, chunk in enumerate(chunks):
+        print(f"\n--- Chunk {i+1}/{len(chunks)} ({chunk[0]['timestamp']} → {chunk[-1]['timestamp']}) ---\n")
+        result = analyze_chunk(chunk, client, i + 1, len(chunks))
+        all_cuts.extend(result.get("cuts", []))
+        all_edits.extend(result.get("edits", []))
+        if result.get("summary"):
+            summaries.append(f"[{chunk[0]['timestamp']}–{chunk[-1]['timestamp']}] {result['summary']}")
+        n_cuts = len(result.get("cuts", []))
+        n_edits = len(result.get("edits", []))
+        print(f"\n  → {n_cuts} cuts, {n_edits} edits")
+
+    return {
+        "cuts": all_cuts,
+        "edits": all_edits,
+        "summary": " | ".join(summaries),
+    }
 
 
 def apply_cuts(segments, cuts_data):
@@ -272,6 +373,7 @@ if __name__ == "__main__":
     parser.add_argument("transcript", help="Path to transcript .txt file")
     parser.add_argument("--audio", "-a", help="Path to audio file (generates ffmpeg command)")
     parser.add_argument("--output-dir", "-o", default="./results", help="Output directory (default: ./results)")
+    parser.add_argument("--chunk-minutes", "-c", type=int, default=30, help="Chunk size in minutes (default: 30). Use 0 to process all at once.")
     args = parser.parse_args()
 
     if not os.path.exists(args.transcript):
@@ -292,9 +394,12 @@ if __name__ == "__main__":
     segments = parse_transcript(text)
     print(f"Parsed {len(segments)} segments\n")
 
-    print("Analyzing with Claude Opus (streaming)...\n")
-    transcript_for_claude = format_for_claude(segments)
-    cuts_data = analyze_with_claude(transcript_for_claude, client)
+    if args.chunk_minutes == 0:
+        print("Processing full transcript in one pass...\n")
+        cuts_data = analyze_with_claude(format_for_claude(segments), client)
+    else:
+        print(f"Processing in ~{args.chunk_minutes}-minute chunks...\n")
+        cuts_data = process_in_chunks(segments, client, target_minutes=args.chunk_minutes)
 
     n_cuts = len(cuts_data.get("cuts", []))
     n_edits = len(cuts_data.get("edits", []))
